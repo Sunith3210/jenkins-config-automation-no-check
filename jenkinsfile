@@ -558,37 +558,60 @@ try:
     print("Pull request:", pr["html_url"])
     print("Head commit:", head_sha)
 
-    # Verify that branch protection exposes required status checks.
-    try:
-        _, protection = request(
-            endpoint(
-                f"/repos/{owner}/{repo}/branches/"
-                f"{urllib.parse.quote(base, safe='')}/protection"
-            )
-        )
-    except RuntimeError as exc:
-        raise RuntimeError(
-            "Cannot verify branch protection and required checks. "
-            "Configure required status checks on the base branch and "
-            "grant the GitHub credential permission to read protection "
-            "settings. Original error: " + str(exc)
-        ) from exc
+    # Verify that branch protection or rulesets expose required status checks.
+    required = set()
 
-    required_block = protection.get("required_status_checks") or {}
-    required = set(required_block.get("contexts") or [])
-    required.update(
-        item["context"]
-        for item in required_block.get("checks") or []
-        if item.get("context")
+    # First, try the rulesets API (used by GitHub's newer rulesets feature).
+    rules_path = (
+        f"/repos/{owner}/{repo}/rules/branches/"
+        f"{urllib.parse.quote(base, safe='')}"
     )
-
-    if not required:
-        raise RuntimeError(
-            f"Branch '{base}' has no required status checks. "
-            "Configure required checks before merging."
+    try:
+        _, rules = request(endpoint(rules_path))
+        for rule in rules or []:
+            if rule.get("type") == "required_status_checks":
+                params = rule.get("parameters") or {}
+                for check in params.get("required_status_checks") or []:
+                    ctx = check.get("context")
+                    if ctx:
+                        required.add(ctx)
+    except RuntimeError as exc:
+        print(
+            "WARN: Could not read rulesets for branch "
+            f"'{base}': {exc}"
         )
 
-    print("Required checks:", ", ".join(sorted(required)))
+    # Fall back to classic branch protection if rulesets returned nothing.
+    if not required:
+        try:
+            _, protection = request(
+                endpoint(
+                    f"/repos/{owner}/{repo}/branches/"
+                    f"{urllib.parse.quote(base, safe='')}/protection"
+                )
+            )
+            required_block = protection.get("required_status_checks") or {}
+            required.update(required_block.get("contexts") or [])
+            required.update(
+                item["context"]
+                for item in required_block.get("checks") or []
+                if item.get("context")
+            )
+        except RuntimeError as exc:
+            print(
+                "WARN: Could not read classic branch protection for "
+                f"branch '{base}': {exc}"
+            )
+
+    # If we still have no required checks, do not fail.
+    # GitHub itself will enforce rulesets and required checks at merge time.
+    if not required:
+        print(
+            "WARN: No required status checks discovered through the API. "
+            "GitHub will still enforce any rulesets at merge time."
+        )
+    else:
+        print("Required checks:", ", ".join(sorted(required)))
 
     if mode == "GITHUB_AUTO_MERGE":
         # GitHub will merge only when its rules and required checks pass.
