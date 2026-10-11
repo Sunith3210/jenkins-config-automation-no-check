@@ -1,6 +1,6 @@
 {
   "environment": "dev",
-  "appName": "MYSUNITHAPP29",
+  "appName": "myapp-nocheck",
   "version": "2.0.0",
   "replicas": 1,
   "logLevel": "INFO",
